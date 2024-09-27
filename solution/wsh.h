@@ -1,1 +1,1 @@
-#define HISTORY_SIZE 5
+#define HISTORY_SIZE 12
