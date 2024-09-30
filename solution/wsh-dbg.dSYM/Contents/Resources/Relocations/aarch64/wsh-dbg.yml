@@ -1,0 +1,13 @@
+---
+triple:          'arm64-apple-darwin'
+binary-path:     wsh-dbg
+relocations:
+  - { offsetInCU: 0x1E, offset: 0x1E, size: 0x8, addend: 0x0, symName: _printHistory, symObjAddr: 0x0, symBinAddr: 0x1000038FC, symSize: 0x54 }
+  - { offsetInCU: 0x8C, offset: 0x8C, size: 0x8, addend: 0x0, symName: _printHistory, symObjAddr: 0x0, symBinAddr: 0x1000038FC, symSize: 0x54 }
+  - { offsetInCU: 0xBB, offset: 0xBB, size: 0x8, addend: 0x0, symName: _addToHistory, symObjAddr: 0x54, symBinAddr: 0x100003950, symSize: 0xC0 }
+  - { offsetInCU: 0x11C, offset: 0x11C, size: 0x8, addend: 0x0, symName: _updateHistoryCapacity, symObjAddr: 0x114, symBinAddr: 0x100003A10, symSize: 0x90 }
+  - { offsetInCU: 0x1B5, offset: 0x1B5, size: 0x8, addend: 0x0, symName: _read_cmd, symObjAddr: 0x1A4, symBinAddr: 0x100003AA0, symSize: 0x48 }
+  - { offsetInCU: 0x468, offset: 0x468, size: 0x8, addend: 0x0, symName: _parse_cmd, symObjAddr: 0x1EC, symBinAddr: 0x100003AE8, symSize: 0x6C }
+  - { offsetInCU: 0x52C, offset: 0x52C, size: 0x8, addend: 0x0, symName: _exec_cmd, symObjAddr: 0x258, symBinAddr: 0x100003B54, symSize: 0x184 }
+  - { offsetInCU: 0x69B, offset: 0x69B, size: 0x8, addend: 0x0, symName: _main, symObjAddr: 0x3DC, symBinAddr: 0x100003CD8, symSize: 0x1C8 }
+...
