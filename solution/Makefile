@@ -16,4 +16,4 @@ $(TARGET)-dbg: $(SRC)
 	$(CC) $(CFLAGS-dbg) $< -o $@
 
 clean:
-	rm -f $(TARGET) $(TARGET)-dbg local*.txt
+	rm -f $(TARGET) $(TARGET)-dbg

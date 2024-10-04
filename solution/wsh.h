@@ -7,3 +7,12 @@ typedef struct HistNode {
     struct HistNode *next;
     struct HistNode *prev;
 } HistNode;
+
+typedef struct LocalNode {
+    char *varname;
+    char *varvalue;
+    struct LocalNode *next;
+} LocalNode;
+
+int run_command(void);
+char * searchLocal(char*);

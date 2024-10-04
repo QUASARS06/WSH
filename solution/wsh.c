@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -5,13 +6,30 @@
 #include <dirent.h>
 #include <unistd.h>
 #include <limits.h>
+#include <sys/types.h>
+#include <sys/wait.h>
 #include "wsh.h"
+
+int history_capacity = HISTORY_SIZE;
+int curr_history_size = 0;
+
+HistNode *histHead = NULL;
+HistNode *histTail = NULL;
+
+LocalNode *localHead = NULL;
+
+// variables used to store the command input by user
+char cmd_buf[MAXLINE];
+char *cmd_args[MAXARGS];
+
+// stores the last command issued by the user
+char last_command[MAXLINE];
 
 /**
  * Counts number of args in cmd_args
  * Ignore the first item which is the actual command
  */
-int count_cmd_args(char *cmd_args[]) {
+int count_cmd_args(void) {
     int cmd_args_count = 0;
     for(int i = 1 ; cmd_args[i] != NULL ; i++) {
         cmd_args_count++;
@@ -20,20 +38,29 @@ int count_cmd_args(char *cmd_args[]) {
     return cmd_args_count;
 }
 
-int set_local_vars_file_name(char **local_vars_file_name) {
-    char *s1 = "local";
-    char *s2 = ".txt";
+/**
+ * If there are any variables in the args list then we replace it by their corresponding value
+ */
+int replace_vars(void) {
 
-    pid_t pid = getpid();
-    char *pid_str = NULL;
+    for(int i = 0 ; cmd_args[i] != NULL ; i++) {
+        if(cmd_args[i][0] == '$') {
+            
+            char *var_name = cmd_args[i] + 1;
+            char *var_val;
 
-    if(asprintf(&pid_str, "%jd", (intmax_t) pid) == -1) return -1;
-    
-    *local_vars_file_name = malloc(strlen(s1) + strlen(s2) + strlen(pid_str) + 1);
-
-    strcpy(*local_vars_file_name, s1);
-    strcat(*local_vars_file_name, pid_str);
-    strcat(*local_vars_file_name, s2);
+            if(getenv(var_name) != NULL) {
+                var_val = getenv(var_name);
+            } 
+            else if(searchLocal(var_name) != NULL) {
+                var_val = searchLocal(var_name);
+            }
+            else {
+                var_val = "";
+            }
+            cmd_args[i] = strdup(var_val);
+        }
+    }
 
     return 0;
 }
@@ -41,35 +68,12 @@ int set_local_vars_file_name(char **local_vars_file_name) {
 /**
  * Reads input from stdin and then stores it in the cmd_buf passed
  */
-int read_cmd(char *cmd_buf, size_t cmd_buf_sz) {
+int read_cmd(char *cmd, size_t cmd_sz) {
     printf("wsh> ");
+    fflush(stdout);
 
-    int cmdLength = getline(&cmd_buf, &cmd_buf_sz, stdin);
+    int cmdLength = getline(&cmd, &cmd_sz, stdin);
     if(cmdLength == -1) return -1;
-
-    return 0;
-}
-
-/**
- * If there are any variables in the args list then we replace it by their corresponding value
- */
-int replace_vars(char *cmd_buf[]) {
-
-    for(int i = 0 ; cmd_buf[i] != NULL ; i++) {
-        if(cmd_buf[i][0] == '$') {
-            
-            char *var_name = cmd_buf[i] + 1;
-            char *var_val;
-
-            if(getenv(var_name) != NULL) {
-                var_val = getenv(var_name);
-            } else {
-                var_val = "";
-            }
-
-            cmd_buf[i] = strdup(var_val);
-        }
-    }
 
     return 0;
 }
@@ -78,22 +82,24 @@ int replace_vars(char *cmd_buf[]) {
  * Parses the cmd_buf string and breaks it into tokens separated by " "
  * The tokens are then saved in the cmg_args_list array
  */
-int parse_cmd(char *cmd_buf, char *cmd_args_list[]) {
+int parse_cmd(char *cmd_buf_to_parse) {
     char *token;
 
     // first token
-    token = strtok(cmd_buf, " ");
+    token = strtok(cmd_buf_to_parse, " ");
 
     int i = 0;
     while(token != NULL) {
-        cmd_args_list[i] = token;
+        // if we encounter a '#' at the start of any token we stop processing the rest of the input sequence
+        if(strlen(token) >= 1 && token[0] == '#') break;
+        cmd_args[i] = token;
         i++;
         token = strtok(NULL, " ");
     }
-    cmd_args_list[i] = NULL;
+    cmd_args[i] = NULL;
 
     // replace variables by values
-    replace_vars(cmd_args_list);
+    replace_vars();
 
     return 0;
 }
@@ -102,8 +108,8 @@ int parse_cmd(char *cmd_buf, char *cmd_args_list[]) {
  * Prints the history pointed by HEAD
  * The history LL ends with a NULL so it's prints till NULL is encoutered
  */
-void printHistory(HistNode *HEAD) {
-    HistNode *ptr = HEAD;
+void printHistory(void) {
+    HistNode *ptr = histHead;
     
     int i = 1;
     while(ptr != NULL) {
@@ -116,8 +122,8 @@ void printHistory(HistNode *HEAD) {
 /**
  * Checks for a given index value in the History LL
  */
-char * searchHistory(HistNode *HEAD, int target_idx) {
-    HistNode *ptr = HEAD;
+char * searchHistory(int target_idx) {
+    HistNode *ptr = histHead;
     while(target_idx > 1) {
         ptr = ptr->next;
         target_idx--;
@@ -130,32 +136,32 @@ char * searchHistory(HistNode *HEAD, int target_idx) {
  * Adds a NON built-in and NON history executed command into the History
  * If overflow then truncate old commands in the history
  */
-void addToHistory(HistNode **HEAD, HistNode **TAIL, char* cmd, int *curr_hist_size, int hist_capacity) {
+void addToHistory(void) {
 
     HistNode *NN = (HistNode*) malloc(sizeof(HistNode));
     NN->prev = NULL;
     NN->next = NULL;
-    strcpy(NN->cmd, cmd);
+    strcpy(NN->cmd, cmd_buf);
 
-    if(*HEAD == NULL && *TAIL == NULL) {
-        *HEAD = NN;
-        *TAIL = NN;
-        *curr_hist_size += 1;
+    if(histHead == NULL && histTail == NULL) {
+        histHead = NN;
+        histTail = NN;
+        curr_history_size += 1;
         return;
     }
 
-    (*HEAD)->prev = NN;
-    NN->next = *HEAD;
-    *HEAD = NN;
+    histHead->prev = NN;
+    NN->next = histHead;
+    histHead = NN;
 
-    if(*curr_hist_size >= hist_capacity) {
-        HistNode *t = *TAIL;
-        *TAIL = (*TAIL)->prev;
-        (*TAIL)->next = NULL;
+    if(curr_history_size >= history_capacity) {
+        HistNode *t = histTail;
+        histTail = histTail->prev;
+        histTail->next = NULL;
 
         free(t);
     } else {
-        *curr_hist_size += 1;
+        curr_history_size += 1;
     }
 
 }
@@ -173,31 +179,31 @@ void addToHistory(HistNode **HEAD, HistNode **TAIL, char* cmd, int *curr_hist_si
  * 
  * (III) if the new and old hist capacities are the same then don't do anything
  */
-void updateHistoryCapacity(HistNode **HEAD, HistNode **TAIL, int *curr_hist_size, int *old_hist_capacity, int new_hist_capacity) {
+void updateHistoryCapacity(int new_hist_capacity) {
     
     if(new_hist_capacity == 0) {
-        *HEAD = NULL;
-        *TAIL = NULL;
-        *old_hist_capacity = new_hist_capacity;
-        *curr_hist_size = 0;
+        histHead = NULL;
+        histTail = NULL;
+        history_capacity = new_hist_capacity;
+        curr_history_size = 0;
     }
     
-    if(new_hist_capacity < *old_hist_capacity && *curr_hist_size > new_hist_capacity) {
+    if(new_hist_capacity < history_capacity && curr_history_size > new_hist_capacity) {
 
-        int nodesToDelete = *curr_hist_size - new_hist_capacity;
+        int nodesToDelete = curr_history_size - new_hist_capacity;
 
         while(nodesToDelete > 0) {
-            HistNode *t = *TAIL;
-            *TAIL = (*TAIL)->prev;
-            (*TAIL)->next = NULL;
+            HistNode *t = histTail;
+            histTail = histTail->prev;
+            histTail->next = NULL;
 
             free(t);
             nodesToDelete -= 1;
         }
-        *curr_hist_size = new_hist_capacity;
+        curr_history_size = new_hist_capacity;
     }
     
-    *old_hist_capacity = new_hist_capacity;
+    history_capacity = new_hist_capacity;
 }
 
 /**
@@ -206,19 +212,19 @@ void updateHistoryCapacity(HistNode **HEAD, HistNode **TAIL, int *curr_hist_size
  * 2) history set n - updates history capactiy to n
  * 3) history n - executes the nth command in the history
  */
-int history(char *cmd_args[], HistNode **histHead, HistNode **histTail, bool *is_from_history, int *curr_hist_size, int *hist_capacity) {
+int history(bool *is_from_history) {
 
     // Built-In history command
     if(cmd_args[1] == NULL) {
         // print the history
-        printHistory(*histHead);
+        printHistory();
     }
 
     // if history set # command is executed - update history size
     else if(strcmp(cmd_args[1], "set") == 0) {
         int new_hist_capactiy = atoi(cmd_args[2]);
         if(new_hist_capactiy > 0) {
-            updateHistoryCapacity(histHead, histTail, curr_hist_size, hist_capacity, new_hist_capactiy);
+            updateHistoryCapacity(new_hist_capactiy);
         }
     }
 
@@ -226,9 +232,10 @@ int history(char *cmd_args[], HistNode **histHead, HistNode **histTail, bool *is
         // check cmd_args[1] is a valid integer
         *is_from_history = true;
         int hist_idx = atoi(cmd_args[1]);
-        if(hist_idx > 0 && hist_idx <= *curr_hist_size) {
-            char *hist_cmd = searchHistory(*histHead, hist_idx);
-            printf("%s\n", hist_cmd);
+        if(hist_idx > 0 && hist_idx <= curr_history_size) {
+            char *hist_cmd = searchHistory(hist_idx);
+            parse_cmd(hist_cmd);
+            run_command();
         }
     }
 
@@ -268,13 +275,13 @@ int ls(void) {
 /**
  * Custom implementation of cd command
  */
-int cd(char *cmd_args[]) {
+int cd(void) {
     if(cmd_args[1] == NULL) return -1;
 
-    if(count_cmd_args(cmd_args) != 1) return -1;
+    if(count_cmd_args() != 1) return -1;
     
     if(chdir(cmd_args[1]) != 0) {
-        perror("chdir failed\n");
+        return -1;
     }
 
     return 0;
@@ -284,79 +291,207 @@ int cd(char *cmd_args[]) {
  * Gets cmd args in the form varname=varvalue
  * Sets this in the current processes environment variable
  */
-int export(char* cmd_args[]) {
-    if(count_cmd_args(cmd_args) != 1) return -1;
+int export(void) {
+    if(count_cmd_args() != 1) return -1;
     putenv(cmd_args[1]);
     return 0;
 }
 
-int local(char *cmd_args[], char *LOCAL_VARS) {
-    if(count_cmd_args(cmd_args) != 1) return -1;
-
-    FILE *fp = fopen(LOCAL_VARS, "ab+");
+/**
+ * Prints the local variables LL pointed by localHead
+ */
+int vars(void) {
+    if(localHead == NULL) return 0;
+    LocalNode *ptr = localHead;
     
-    fclose(fp);
+    while(ptr != NULL) {
+        if(ptr->varvalue != NULL && strlen(ptr->varvalue) > 0) printf("%s=%s\n", ptr->varname, ptr->varvalue);
+        ptr = ptr->next;
+    }
 
     return 0;
 }
 
-int run_command(char *cmd, char *cmd_args[]) {
-    (void)cmd_args;
-    (void)cmd;
-    char *path = getenv("PATH");
-    printf("PATH = |%s|\n", path);
+/**
+ * Checks for a given index value in the History LL
+ */
+char * searchLocal(char* varname) {
+    LocalNode *ptr = localHead;
+    while(ptr != NULL) {
+        if(strcmp(varname, ptr->varname) == 0) return ptr->varvalue;
+        ptr = ptr->next;
+    }
+
+    return NULL;
+}
+
+int local(void) {
+    if(count_cmd_args() != 1) return -1;
+
+    char *token;
+    char *varname = NULL;
+    char *varvalue = NULL;
+
+    // first token
+    token = strtok(cmd_args[1], "=");
+
+    int ct = 0;
+    while(token != NULL) {
+        ct++;
+        if(ct == 1) varname = token;
+        else if(ct == 2) varvalue = token;
+        else return -1;
+
+        token = strtok(NULL, " ");
+    }
+
+    LocalNode *ptr = localHead;
+
+    while(ptr != NULL && ptr->next != NULL) {
+        if(strcmp(ptr->varname, varname) == 0) break;
+        ptr = ptr->next;
+    }
+
+    if(ptr == NULL || ptr->next == NULL) {
+        LocalNode *LN = (LocalNode*) malloc(sizeof(LocalNode));
+        
+        LN->varname = varname;
+        LN->varvalue = varvalue;
+        LN->next = NULL;
+
+        if(ptr == NULL) localHead = LN;
+        else {
+            ptr->next = LN;
+        }
+    } else {
+        ptr->varvalue = varvalue;
+    }
+
+    free(token);
+
     return 0;
 }
 
 
-int exec_cmd(char *cmd, char *cmd_args[], HistNode **histHead, HistNode **histTail, int *curr_hist_size, int *hist_capacity, char *last_command, char *LOCAL_VARS) {
+int run_command(void) {
+    char cmd_path[4096] = "";
+    if(access(cmd_args[0], X_OK) == 0) {
+        strcpy(cmd_path, cmd_args[0]);
+    } else {
+        char *path_original = getenv("PATH");
+        char *path = strdup(path_original);
+
+        char *token = strtok(path, ":");
+        
+        while(token != NULL) {
+            snprintf(cmd_path, sizeof(cmd_path), "%s/%s", token, cmd_args[0]);
+            if(access(cmd_path, X_OK) == 0) break;
+
+            token = strtok(NULL, ":");
+        }
+
+        free(path);
+    }
+    
+    if(strlen(cmd_path) == 0) return -1;
+
+    pid_t pid = fork();
+    
+    if(pid < 0) {
+        return -1;
+    }
+    else if(pid == 0) {
+        // child process where we execute the command
+        execv(cmd_path, cmd_args);
+        // perror("execv\n");
+
+        // if execv returned it means some error
+        exit(-1);
+    } else {
+        int status_ptr;
+        pid_t terminated;
+
+        terminated = waitpid(pid, &status_ptr, 0);
+
+        if(terminated == -1) exit(-1);
+
+        if(WIFEXITED(terminated)) exit(-1);
+    }
+
+    return 0;
+}
+
+int exec_cmd(void) {
 
     bool is_from_history = false;   // stores whether a NON built-in command is requested via history or not
     bool is_built_in = true;
-
-    if(strcmp(cmd_args[0], "cd") == 0) {
-        // Built-In change directory
-        cd(cmd_args);
+    
+    if(strcmp(cmd_args[0], "exit") == 0) {      // if the command passed is exit then exit(-1) gracefully
+        exit(0);
     }
-    else if(strcmp(cmd_args[0], "export") == 0) {
-        // Built-In export 'GLOBAL' variables
-        export(cmd_args);
-
+    else if(strcmp(cmd_args[0], "cd") == 0) {    // Built-In change directory
+        cd();
     }
-    else if(strcmp(cmd_args[0], "local") == 0) {
-        // Built-In local variables
-        local(cmd_args, LOCAL_VARS);
-        
+    else if(strcmp(cmd_args[0], "export") == 0) {   // Built-In export 'GLOBAL' variables
+        export();
     }
-    else if(strcmp(cmd_args[0], "vars") == 0) {
-        // Built-In list all the variables
-        
+    else if(strcmp(cmd_args[0], "local") == 0) {    // Built-In local variables
+        local();  
     }
-    else if(strcmp(cmd_args[0], "history") == 0) {
-        // Built-In history command
-        history(cmd_args, histHead, histTail, &is_from_history, curr_hist_size, hist_capacity);
+    else if(strcmp(cmd_args[0], "vars") == 0) { // Built-In list all the variables
+        vars();   
     }
-    else if(strcmp(cmd_args[0], "ls") == 0) {
-        // Built-In ls -1 command
+    else if(strcmp(cmd_args[0], "history") == 0) {  // Built-In history command
+        history(&is_from_history);
+    }
+    else if(strcmp(cmd_args[0], "ls") == 0) {   // Built-In ls -1 command
         ls();
     }
     else {
         is_built_in = false;
-        // fork and execute in child process
     }
 
     // since it's not a built-in command it will be saved in the history
-    if(!is_from_history && !is_built_in && !(last_command != NULL && strcmp(last_command, cmd) == 0)) {
-        addToHistory(histHead, histTail, cmd, curr_hist_size, *hist_capacity);
+    if(!is_from_history && !is_built_in && !(strcmp(last_command, cmd_buf) == 0)) {
+        addToHistory();
     }
 
     // we set the current command being parsed always so that we can use it to update the history quickly
     if(!is_built_in) {
-
-        //run_command(cmd, cmd_args);
-
-        strcpy(last_command, cmd);
+        // fork and execute in child process
+        run_command();
+        strcpy(last_command, cmd_buf);
     }
+
+    return 0;
+}
+
+int run_batch_mode(char *file_name) {
+    FILE *batch_file = fopen(file_name, "r");
+    if(batch_file == NULL) {
+        exit(-1);
+    }
+
+    char *line = NULL;
+    size_t line_buf_sz = 0;
+    ssize_t line_length = 0;
+
+    while((line_length = getline(&line, &line_buf_sz, batch_file)) != -1) {
+        if(line_length <= 1 || line[0] == '#') continue;
+        if(line[strlen(line) - 1] == '\n') line[strlen(line) - 1] = '\0';
+
+        // parse the input command buffer to tokenize and store in the array
+        char* cmd_buf_cpy = strdup(line);
+        parse_cmd(cmd_buf_cpy);
+
+        if(cmd_args[0] == NULL) continue;
+
+        // check if built-in
+        exec_cmd();
+    }
+
+    fclose(batch_file);
+    free(line);
 
     return 0;
 }
@@ -365,47 +500,28 @@ int main(int argc, char* argv[]) {
 
     if(argc == 2) {
         // Batch Mode
-        printf("Need to run %s\n", argv[1]);
+        return run_batch_mode(argv[1]);
     } else if(argc > 2) {
         printf("Something is wrong\n");
     }
 
-    // Define all the variables
-    // char *CURR_WORKING_DIR = NULL;
-    // if(getcwd(CURR_WORKING_DIR, sizeof(CURR_WORKING_DIR)) == NULL) return -1;
-
-    char* LOCAL_VARS = NULL;
-    set_local_vars_file_name(&LOCAL_VARS);
-
-    int history_capacity = HISTORY_SIZE;
-    int curr_history_size = 0;
-    HistNode *histHead = NULL;
-    HistNode *histTail = NULL;
-
-    // variables used to store the command input by user
-    char cmd_buf[MAXLINE];
-    char *cmd_args_list[MAXARGS];
-
-    // stores the last command issued by the user
-    char last_command[MAXLINE];
-
     while(read_cmd(cmd_buf, sizeof(cmd_buf)) >= 0) {
-        if(cmd_buf[strlen(cmd_buf) - 1] == EOF || cmd_buf[strlen(cmd_buf) - 1] == '\n') {
+        
+        if(cmd_buf[strlen(cmd_buf) - 1] == EOF) exit(0);
+
+        if(cmd_buf[strlen(cmd_buf) - 1] == '\n') {
             cmd_buf[strlen(cmd_buf) - 1] = '\0';
         }
 
         // parse the input command buffer to tokenize and store in the array
         char* cmd_buf_cpy = strdup(cmd_buf);
-        parse_cmd(cmd_buf_cpy, cmd_args_list);
+        parse_cmd(cmd_buf_cpy);
 
-        // if the command passed is exit then exit(0) gracefully
-        if(strcmp(cmd_args_list[0], "exit") == 0) exit(0);
+        if(cmd_args[0] == NULL) continue;
 
         // check if built-in
-        exec_cmd(cmd_buf, cmd_args_list, &histHead, &histTail, &curr_history_size, &history_capacity, last_command, LOCAL_VARS);
-
+        exec_cmd();
     }
     
-    free(LOCAL_VARS);
     return 0;
 }
