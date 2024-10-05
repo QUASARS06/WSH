@@ -8,6 +8,8 @@
 #include <limits.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <fcntl.h>
+#include <ctype.h>
 #include "wsh.h"
 
 int history_capacity = HISTORY_SIZE;
@@ -24,6 +26,43 @@ char *cmd_args[MAXARGS];
 
 // stores the last command issued by the user
 char last_command[MAXLINE];
+
+// redirection
+bool redirect_append = false;
+
+bool redirect_in = false;
+bool redirect_out = false;
+bool redirect_err = false;
+
+int orig_stdin;
+int orig_stdout;
+int orig_stderr;
+
+char *redirect_filename = NULL;
+int redirect_fd = -1;
+
+// error executing cmds
+bool is_err = false;
+
+
+void free_memory(void) {
+    // Free History
+    HistNode *histPtr = histHead;
+    while(histPtr != NULL) {
+        HistNode *h = histPtr;
+        histPtr = histPtr->next;
+        free(h);
+    }
+
+    // Free Local
+    LocalNode *localPtr = localHead;
+    while(localPtr != NULL) {
+        LocalNode *l = localPtr;
+        localPtr = localPtr->next;
+        free(l);
+    }
+}
+
 
 /**
  * Counts number of args in cmd_args
@@ -78,11 +117,117 @@ int read_cmd(char *cmd, size_t cmd_sz) {
     return 0;
 }
 
+int set_redirection(void) {    
+    if(redirect_out) {
+        int output_fd = open(redirect_filename, O_WRONLY | O_CREAT | (redirect_append ? O_APPEND : O_TRUNC), 0644);
+        if(output_fd < 0) return -1;
+
+        if(redirect_err) dup2(output_fd, STDERR_FILENO);
+        dup2(output_fd, redirect_fd);
+
+        close(output_fd);
+    }
+
+    if(redirect_in) {
+        int input_fd = open(redirect_filename, O_RDONLY);
+        if(input_fd < 0) return -1;
+
+        dup2(input_fd, redirect_fd);
+        
+        close(input_fd);
+    }
+
+    return 0;
+
+}
+
+void unset_redirection(void) {
+    dup2(orig_stdin, STDIN_FILENO);
+    dup2(orig_stdout, STDOUT_FILENO);
+    dup2(orig_stderr, STDERR_FILENO);
+    close(orig_stdin);
+    close(orig_stdout);
+    close(orig_stderr);
+}
+
+void check_redirection(char *token) {
+
+    if(strstr(token, "&>>") != NULL) {
+        redirect_out = true;
+        redirect_err = true;
+        redirect_append = true;
+
+        redirect_fd = 1;
+        redirect_filename = strtok(token, "&>>");
+    } 
+    else if(strstr(token, "&>") != NULL) {
+        redirect_out = true;
+        redirect_err = true;
+
+        redirect_fd = 1;
+        redirect_filename = strtok(token, "&>");
+    }  
+    else if(strstr(token, ">>") != NULL) {
+        redirect_out = true;
+        redirect_append = true;
+        
+        if(isdigit(token[0])) {
+            redirect_fd = atoi(strtok(token, ">>"));
+            redirect_filename = strtok(NULL, "");
+        } else {
+            redirect_fd = 1;
+            redirect_filename = strtok(token, ">>");
+        }
+    }
+    else if(strstr(token, ">") != NULL) {
+        redirect_out = true;
+
+        if(isdigit(token[0])) {
+            redirect_fd = atoi(strtok(token, ">"));
+            redirect_filename = strtok(NULL, "");
+        } else {
+            redirect_fd = 1;
+            redirect_filename = strtok(token, ">");
+        }
+    }
+    else if(strstr(token, "<") != NULL) {
+        redirect_in = true;
+
+        if(isdigit(token[0])) {
+            redirect_fd = atoi(strtok(token, "<"));
+            redirect_filename = strtok(NULL, "");
+        } else {
+            redirect_fd = 0;
+            redirect_filename = strtok(token, "<");
+        }
+    }
+
+    // printf("Redirect FD = %d\n", redirect_fd);
+    // printf("Filename = %s\n", filename);
+    // printf("IN = %d | OUT = %d | ERR = %d | APPEND = %d\n\n", redirect_in, redirect_out, redirect_err, redirect_append);
+
+}
+
 /**
  * Parses the cmd_buf string and breaks it into tokens separated by " "
  * The tokens are then saved in the cmg_args_list array
  */
 int parse_cmd(char *cmd_buf_to_parse) {
+
+    // redirection
+    redirect_filename = NULL;
+    redirect_fd = -1;
+
+    redirect_append = false;
+
+    redirect_in = false;
+    redirect_out = false;
+    redirect_err = false;
+
+    orig_stdin = dup(STDIN_FILENO);
+    orig_stdout = dup(STDOUT_FILENO);
+    orig_stderr = dup(STDERR_FILENO);
+
     char *token;
 
     // first token
@@ -92,6 +237,10 @@ int parse_cmd(char *cmd_buf_to_parse) {
     while(token != NULL) {
         // if we encounter a '#' at the start of any token we stop processing the rest of the input sequence
         if(strlen(token) >= 1 && token[0] == '#') break;
+
+        check_redirection(token);
+        if(redirect_in || redirect_out || redirect_err) break;
+        
         cmd_args[i] = token;
         i++;
         token = strtok(NULL, " ");
@@ -100,6 +249,11 @@ int parse_cmd(char *cmd_buf_to_parse) {
 
     // replace variables by values
     replace_vars();
+
+    if(strcmp(cmd_args[0], "exit") != 0) {
+        //err
+        is_err = false;
+    }
 
     return 0;
 }
@@ -278,9 +432,13 @@ int ls(void) {
 int cd(void) {
     if(cmd_args[1] == NULL) return -1;
 
-    if(count_cmd_args() != 1) return -1;
+    if(count_cmd_args() != 1) {
+        is_err = true;
+        return -1;
+    }
     
     if(chdir(cmd_args[1]) != 0) {
+        is_err = true;
         return -1;
     }
 
@@ -292,7 +450,9 @@ int cd(void) {
  * Sets this in the current processes environment variable
  */
 int export(void) {
-    if(count_cmd_args() != 1) return -1;
+    if(count_cmd_args() != 1) {
+        return -1;
+    }
     putenv(cmd_args[1]);
     return 0;
 }
@@ -393,29 +553,37 @@ int run_command(void) {
         free(path);
     }
     
-    if(strlen(cmd_path) == 0) return -1;
+    if(strlen(cmd_path) == 0) {
+        is_err = true;
+        return -1;
+    }
 
     pid_t pid = fork();
     
     if(pid < 0) {
+        is_err = true;
         return -1;
     }
     else if(pid == 0) {
         // child process where we execute the command
         execv(cmd_path, cmd_args);
-        // perror("execv\n");
-
+        
         // if execv returned it means some error
         exit(-1);
     } else {
         int status_ptr;
-        pid_t terminated;
-
-        terminated = waitpid(pid, &status_ptr, 0);
-
-        if(terminated == -1) exit(-1);
-
-        if(WIFEXITED(terminated)) exit(-1);
+        waitpid(pid, &status_ptr, 0);
+    
+        if(WIFEXITED(status_ptr)) {
+            int exit_status = WEXITSTATUS(status_ptr);
+            if(exit_status != 0) {
+                is_err = true;
+                return -1;
+            }
+        } else {
+            is_err = true;
+            return -1;
+        }
     }
 
     return 0;
@@ -423,11 +591,16 @@ int run_command(void) {
 
 int exec_cmd(void) {
 
+    if(redirect_in || redirect_out || redirect_err) {
+        set_redirection();
+    }
+
     bool is_from_history = false;   // stores whether a NON built-in command is requested via history or not
     bool is_built_in = true;
     
     if(strcmp(cmd_args[0], "exit") == 0) {      // if the command passed is exit then exit(-1) gracefully
-        exit(0);
+        free_memory();
+        exit(is_err ? -1 : 0);
     }
     else if(strcmp(cmd_args[0], "cd") == 0) {    // Built-In change directory
         cd();
@@ -461,6 +634,10 @@ int exec_cmd(void) {
         // fork and execute in child process
         run_command();
         strcpy(last_command, cmd_buf);
+    }
+
+    if(redirect_in || redirect_out || redirect_err) {
+        unset_redirection();
     }
 
     return 0;
@@ -523,5 +700,6 @@ int main(int argc, char* argv[]) {
         exec_cmd();
     }
     
-    return 0;
+    free_memory();
+    return is_err ? -1 : 0;
 }
