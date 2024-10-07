@@ -351,7 +351,7 @@ int history(bool *is_from_history) {
         if(hist_idx > 0 && hist_idx <= curr_history_size) {
             char *hist_cmd = searchHistory(hist_idx);
             parse_cmd(hist_cmd);
-            run_command();
+            run_cmd();
         }
     }
 
@@ -417,6 +417,8 @@ int export(void) {
     if(count_cmd_args() != 1) {
         return -1;
     }
+
+    // TODO: export VAR should produce error
     
     putenv(cmd_args[1]);
     return 0;
@@ -431,7 +433,7 @@ int vars(void) {
     LocalNode *ptr = localHead;
     
     while(ptr != NULL) {
-        if(ptr->varvalue != NULL && strlen(ptr->varvalue) > 0) printf("%s=%s\n", ptr->varname, ptr->varvalue);
+        if(ptr->varvalue != NULL && strlen(ptr->varvalue) >= 0) printf("%s=%s\n", ptr->varname, ptr->varvalue);
         ptr = ptr->next;
     }
 
@@ -458,7 +460,7 @@ int local(void) {
 
     char *token;
     char *varname = NULL;
-    char *varvalue = NULL;
+    char *varvalue = "\0";
 
     // first token
     token = strtok(cmd_args[1], "=");
@@ -501,7 +503,7 @@ int local(void) {
 }
 
 
-int run_command(void) {
+int run_cmd(void) {
     char cmd_path[4096] = "";
     if(access(cmd_args[0], X_OK) == 0) {
         strcpy(cmd_path, cmd_args[0]);
@@ -558,13 +560,14 @@ int run_command(void) {
 }
 
 /**
- * Reads input from stdin and then stores it in the cmd_buf passed
+ * Reads input from stdin and then stores it in the cmd_buf
  */
 int read_cmd(char *cmd, size_t cmd_sz) {
     printf("wsh> ");
     fflush(stdout);
-
+    
     int cmdLength = getline(&cmd, &cmd_sz, stdin);
+
     if(cmdLength == -1) return -1;
 
     return 0;
@@ -614,7 +617,7 @@ int parse_cmd(char *cmd_buf_to_parse) {
     replace_vars();
 
     if(strcmp(cmd_args[0], "exit") != 0) {
-        //err
+        // if not exit unset error and execute command, if there is an error in execution it will be set
         is_err = false;
     }
 
@@ -633,6 +636,7 @@ int exec_cmd(void) {
     
     if(strcmp(cmd_args[0], "exit") == 0) {      // if the command passed is exit then exit(-1) gracefully
         free_memory();
+        if(cmd_args[1] != NULL) is_err = true;
         exit(is_err ? -1 : 0);
     }
     else if(strcmp(cmd_args[0], "cd") == 0) {    // Built-In change directory
@@ -665,7 +669,7 @@ int exec_cmd(void) {
     // we set the current command being parsed always so that we can use it to update the history quickly
     if(!is_built_in) {
         // fork and execute in child process
-        run_command();
+        run_cmd();
         strcpy(last_command, cmd_buf);
     }
 
@@ -709,7 +713,7 @@ int run_batch_mode(char *file_name) {
 int main(int argc, char* argv[]) {
 
     // we need to set PATH to /bin initially
-    //putenv("PATH=/bin");
+    // putenv("PATH=/bin");
 
     // if the program was invoked with 2 arguments then it is batch mode
     // with the 2nd argument being the batch file name
