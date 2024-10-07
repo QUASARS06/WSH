@@ -16,4 +16,4 @@ $(TARGET)-dbg: $(SRC)
 	$(CC) $(CFLAGS-dbg) $< -o $@
 
 clean:
-	rm -f $(TARGET) $(TARGET)-dbg
+	rm -rf $(TARGET) $(TARGET)-dbg *.out *.dSYM

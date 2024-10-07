@@ -77,6 +77,17 @@ int count_cmd_args(void) {
     return cmd_args_count;
 }
 
+char * getVarValue(char *var_name) {
+    if(getenv(var_name) != NULL) {
+        return getenv(var_name);
+    } 
+    else if(searchLocal(var_name) != NULL) {
+        return searchLocal(var_name);
+    }
+
+    return "";
+}
+
 /**
  * If there are any variables in the args list then we replace it by their corresponding value
  */
@@ -84,38 +95,37 @@ int replace_vars(void) {
 
     for(int i = 0 ; cmd_args[i] != NULL ; i++) {
         if(cmd_args[i][0] == '$') {
-            
             char *var_name = cmd_args[i] + 1;
-            char *var_val;
+            cmd_args[i] = strdup(getVarValue(var_name));
+        }
+        else if(strstr(cmd_args[i], "$") != NULL) {
+            char *var_name = strchr(cmd_args[i], '$') + 1;
+            char *var_val = getVarValue(var_name);
 
-            if(getenv(var_name) != NULL) {
-                var_val = getenv(var_name);
-            } 
-            else if(searchLocal(var_name) != NULL) {
-                var_val = searchLocal(var_name);
+            char new_token[strlen(cmd_args[i]) + strlen(var_val) + 1];
+            int k = 0;
+            while(cmd_args[i][k] != '$') {
+                new_token[k] = cmd_args[i][k];
+                k++;
             }
-            else {
-                var_val = "";
+
+            int j = 0;
+            while(j <= (int)strlen(var_val) && var_val[j] != '\0') {
+                new_token[k] = var_val[j];
+                k++;
+                j++;
             }
-            cmd_args[i] = strdup(var_val);
+            new_token[k] = '\0';
+
+            cmd_args[i] = strdup(new_token);
+            
+            //printf("Token = |%s| , Varname = |%s| , Varval = |%s| , Token_B = |%s| \n", cmd_args[i], var_name, var_val, new_token);
         }
     }
 
     return 0;
 }
 
-/**
- * Reads input from stdin and then stores it in the cmd_buf passed
- */
-int read_cmd(char *cmd, size_t cmd_sz) {
-    printf("wsh> ");
-    fflush(stdout);
-
-    int cmdLength = getline(&cmd, &cmd_sz, stdin);
-    if(cmdLength == -1) return -1;
-
-    return 0;
-}
 
 int set_redirection(void) {    
     if(redirect_out) {
@@ -152,6 +162,7 @@ void unset_redirection(void) {
 
 void check_redirection(char *token) {
 
+    // strstr will check if redirection symbols are present in our token
     if(strstr(token, "&>>") != NULL) {
         redirect_out = true;
         redirect_err = true;
@@ -208,55 +219,6 @@ void check_redirection(char *token) {
 
 }
 
-/**
- * Parses the cmd_buf string and breaks it into tokens separated by " "
- * The tokens are then saved in the cmg_args_list array
- */
-int parse_cmd(char *cmd_buf_to_parse) {
-
-    // redirection
-    redirect_filename = NULL;
-    redirect_fd = -1;
-
-    redirect_append = false;
-
-    redirect_in = false;
-    redirect_out = false;
-    redirect_err = false;
-
-    orig_stdin = dup(STDIN_FILENO);
-    orig_stdout = dup(STDOUT_FILENO);
-    orig_stderr = dup(STDERR_FILENO);
-
-    char *token;
-
-    // first token
-    token = strtok(cmd_buf_to_parse, " ");
-
-    int i = 0;
-    while(token != NULL) {
-        // if we encounter a '#' at the start of any token we stop processing the rest of the input sequence
-        if(strlen(token) >= 1 && token[0] == '#') break;
-
-        check_redirection(token);
-        if(redirect_in || redirect_out || redirect_err) break;
-        
-        cmd_args[i] = token;
-        i++;
-        token = strtok(NULL, " ");
-    }
-    cmd_args[i] = NULL;
-
-    // replace variables by values
-    replace_vars();
-
-    if(strcmp(cmd_args[0], "exit") != 0) {
-        //err
-        is_err = false;
-    }
-
-    return 0;
-}
 
 /**
  * Prints the history pointed by HEAD
@@ -396,6 +358,7 @@ int history(bool *is_from_history) {
     return 0;
 }
 
+
 /**
  * Custom Implementation of ls -1 command
  */
@@ -445,6 +408,7 @@ int cd(void) {
     return 0;
 }
 
+
 /**
  * Gets cmd args in the form varname=varvalue
  * Sets this in the current processes environment variable
@@ -453,9 +417,11 @@ int export(void) {
     if(count_cmd_args() != 1) {
         return -1;
     }
+    
     putenv(cmd_args[1]);
     return 0;
 }
+
 
 /**
  * Prints the local variables LL pointed by localHead
@@ -472,6 +438,7 @@ int vars(void) {
     return 0;
 }
 
+
 /**
  * Checks for a given index value in the History LL
  */
@@ -484,6 +451,7 @@ char * searchLocal(char* varname) {
 
     return NULL;
 }
+
 
 int local(void) {
     if(count_cmd_args() != 1) return -1;
@@ -589,6 +557,71 @@ int run_command(void) {
     return 0;
 }
 
+/**
+ * Reads input from stdin and then stores it in the cmd_buf passed
+ */
+int read_cmd(char *cmd, size_t cmd_sz) {
+    printf("wsh> ");
+    fflush(stdout);
+
+    int cmdLength = getline(&cmd, &cmd_sz, stdin);
+    if(cmdLength == -1) return -1;
+
+    return 0;
+}
+
+
+/**
+ * Parses the cmd_buf string and breaks it into tokens separated by " "
+ * The tokens are then saved in the cmg_args_list array
+ */
+int parse_cmd(char *cmd_buf_to_parse) {
+
+    // redirection
+    redirect_filename = NULL;
+    redirect_fd = -1;
+
+    redirect_append = false;
+
+    redirect_in = false;
+    redirect_out = false;
+    redirect_err = false;
+
+    orig_stdin = dup(STDIN_FILENO);
+    orig_stdout = dup(STDOUT_FILENO);
+    orig_stderr = dup(STDERR_FILENO);
+
+    char *token;
+
+    // first token
+    token = strtok(cmd_buf_to_parse, " ");
+
+    int i = 0;
+    while(token != NULL) {
+        // if we encounter a '#' at the start of any token we stop processing the rest of the input sequence
+        if(strlen(token) >= 1 && token[0] == '#') break;
+
+        check_redirection(token);
+        if(redirect_in || redirect_out || redirect_err) break;
+        
+        cmd_args[i] = token;
+        i++;
+        token = strtok(NULL, " ");
+    }
+    cmd_args[i] = NULL;
+
+    // replace variables by values
+    replace_vars();
+
+    if(strcmp(cmd_args[0], "exit") != 0) {
+        //err
+        is_err = false;
+    }
+
+    return 0;
+}
+
+
 int exec_cmd(void) {
 
     if(redirect_in || redirect_out || redirect_err) {
@@ -675,15 +708,21 @@ int run_batch_mode(char *file_name) {
 
 int main(int argc, char* argv[]) {
 
+    // we need to set PATH to /bin initially
+    //putenv("PATH=/bin");
+
+    // if the program was invoked with 2 arguments then it is batch mode
+    // with the 2nd argument being the batch file name
     if(argc == 2) {
         // Batch Mode
         return run_batch_mode(argv[1]);
     } else if(argc > 2) {
-        printf("Something is wrong\n");
+        // if more than 2 arguments were passed then it's an error
+        exit(-1);
     }
 
+    // the read_cmd function prints 'wsh> ' and takes input from the user
     while(read_cmd(cmd_buf, sizeof(cmd_buf)) >= 0) {
-        
         if(cmd_buf[strlen(cmd_buf) - 1] == EOF) exit(0);
 
         if(cmd_buf[strlen(cmd_buf) - 1] == '\n') {

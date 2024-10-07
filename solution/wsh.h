@@ -14,5 +14,14 @@ typedef struct LocalNode {
     struct LocalNode *next;
 } LocalNode;
 
+
+
 int run_command(void);
 char * searchLocal(char*);
+
+
+
+int read_cmd(char *, size_t);
+int parse_cmd(char *);
+int exec_cmd(void);
+int run_batch_mode(char *);
