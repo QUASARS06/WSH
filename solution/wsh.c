@@ -20,12 +20,12 @@ HistNode *histTail = NULL;
 
 LocalNode *localHead = NULL;
 
-// variables used to store the command input by user
-char cmd_buf[MAXLINE];
+// stores the tokenized input command issued by the user
 char *cmd_args[MAXARGS];
 
 // stores the last command issued by the user
 char last_command[MAXLINE];
+char curr_command[MAXLINE];
 
 // redirection
 bool redirect_append = false;
@@ -37,12 +37,29 @@ bool redirect_err = false;
 int orig_stdin;
 int orig_stdout;
 int orig_stderr;
+int orig_stdn;
 
 char *redirect_filename = NULL;
 int redirect_fd = -1;
 
 // error executing cmds
 bool is_err = false;
+
+char path_global[4096];
+
+// for batch mode
+char *line = NULL;
+FILE *batch_file = NULL;
+
+void create_cmd_from_args(char dest[]) {
+    strcpy(dest, cmd_args[0]);
+    int i = 1;
+    while(cmd_args[i] != NULL) {
+        strcat(dest, " ");
+        strcat(dest, cmd_args[i]);
+        i++;
+    }
+}
 
 
 void free_memory(void) {
@@ -59,8 +76,15 @@ void free_memory(void) {
     while(localPtr != NULL) {
         LocalNode *l = localPtr;
         localPtr = localPtr->next;
+        
+        free(l->varname);
+        free(l->varvalue);
         free(l);
     }
+
+    if(batch_file != NULL) fclose(batch_file);
+    if(line != NULL) free(line);
+
 }
 
 
@@ -95,8 +119,12 @@ int replace_vars(void) {
 
     for(int i = 0 ; cmd_args[i] != NULL ; i++) {
         if(cmd_args[i][0] == '$') {
+            if(strstr(cmd_args[i], "=") != NULL) {
+                is_err = true;
+                return -1;
+            }
             char *var_name = cmd_args[i] + 1;
-            cmd_args[i] = strdup(getVarValue(var_name));
+            strcpy(cmd_args[i], getVarValue(var_name));
         }
         else if(strstr(cmd_args[i], "$") != NULL) {
             char *var_name = strchr(cmd_args[i], '$') + 1;
@@ -117,9 +145,7 @@ int replace_vars(void) {
             }
             new_token[k] = '\0';
 
-            cmd_args[i] = strdup(new_token);
-            
-            //printf("Token = |%s| , Varname = |%s| , Varval = |%s| , Token_B = |%s| \n", cmd_args[i], var_name, var_val, new_token);
+            strcpy(cmd_args[i], new_token);
         }
     }
 
@@ -155,9 +181,11 @@ void unset_redirection(void) {
     dup2(orig_stdin, STDIN_FILENO);
     dup2(orig_stdout, STDOUT_FILENO);
     dup2(orig_stderr, STDERR_FILENO);
+    dup2(orig_stdn, redirect_fd);
     close(orig_stdin);
     close(orig_stdout);
     close(orig_stderr);
+    close(orig_stdn);
 }
 
 void check_redirection(char *token) {
@@ -212,10 +240,7 @@ void check_redirection(char *token) {
             redirect_filename = strtok(token, "<");
         }
     }
-
-    // printf("Redirect FD = %d\n", redirect_fd);
-    // printf("Filename = %s\n", filename);
-    // printf("IN = %d | OUT = %d | ERR = %d | APPEND = %d\n\n", redirect_in, redirect_out, redirect_err, redirect_append);
+    orig_stdn = dup(redirect_fd);
 
 }
 
@@ -257,7 +282,14 @@ void addToHistory(void) {
     HistNode *NN = (HistNode*) malloc(sizeof(HistNode));
     NN->prev = NULL;
     NN->next = NULL;
-    strcpy(NN->cmd, cmd_buf);
+    strcpy(NN->cmd, curr_command);
+    // strcpy(NN->cmd, cmd_args[0]);
+    // int i=1;
+    // while(cmd_args[i] != NULL) {
+    //     strcat(NN->cmd, " ");
+    //     strcat(NN->cmd, cmd_args[i]);
+    //     i++;
+    // }
 
     if(histHead == NULL && histTail == NULL) {
         histHead = NN;
@@ -420,7 +452,8 @@ int export(void) {
 
     // TODO: export VAR should produce error
     
-    putenv(cmd_args[1]);
+    strcpy(path_global, cmd_args[1]);
+    putenv(path_global);
     return 0;
 }
 
@@ -433,7 +466,7 @@ int vars(void) {
     LocalNode *ptr = localHead;
     
     while(ptr != NULL) {
-        if(ptr->varvalue != NULL && strlen(ptr->varvalue) >= 0) printf("%s=%s\n", ptr->varname, ptr->varvalue);
+        if(ptr->varvalue != NULL) printf("%s=%s\n", ptr->varname, ptr->varvalue);
         ptr = ptr->next;
     }
 
@@ -485,8 +518,10 @@ int local(void) {
     if(ptr == NULL || ptr->next == NULL) {
         LocalNode *LN = (LocalNode*) malloc(sizeof(LocalNode));
         
-        LN->varname = varname;
-        LN->varvalue = varvalue;
+        LN->varname = malloc((strlen(varname)+1) * sizeof(char));
+        LN->varvalue = malloc((strlen(varvalue)+1) * sizeof(char));
+        strcpy(LN->varname, varname);
+        strcpy(LN->varvalue, varvalue);
         LN->next = NULL;
 
         if(ptr == NULL) localHead = LN;
@@ -494,7 +529,9 @@ int local(void) {
             ptr->next = LN;
         }
     } else {
-        ptr->varvalue = varvalue;
+        free(ptr->varvalue);
+        ptr->varvalue = malloc((strlen(varvalue)+1) * sizeof(char));
+        strcpy(ptr->varvalue, varvalue);
     }
 
     free(token);
@@ -505,7 +542,13 @@ int local(void) {
 
 int run_cmd(void) {
     char cmd_path[4096] = "";
-    if(access(cmd_args[0], X_OK) == 0) {
+
+    // accessing the arg0 passed by user directly may cause issues if a directory with name same as
+    // NON-built command exists
+    // Hence if a '/' exists in the user input command just execute it
+
+    // if(access(cmd_args[0], X_OK) == 0) {
+    if(strchr(cmd_args[0], '/') != NULL) {
         strcpy(cmd_path, cmd_args[0]);
     } else {
         char *path_original = getenv("PATH");
@@ -560,14 +603,13 @@ int run_cmd(void) {
 }
 
 /**
- * Reads input from stdin and then stores it in the cmd_buf
+ * Reads input from stdin and then stores it in the cmd_buf passed
  */
 int read_cmd(char *cmd, size_t cmd_sz) {
     printf("wsh> ");
     fflush(stdout);
-    
-    int cmdLength = getline(&cmd, &cmd_sz, stdin);
 
+    int cmdLength = getline(&cmd, &cmd_sz, stdin);
     if(cmdLength == -1) return -1;
 
     return 0;
@@ -612,14 +654,17 @@ int parse_cmd(char *cmd_buf_to_parse) {
         token = strtok(NULL, " ");
     }
     cmd_args[i] = NULL;
-
-    // replace variables by values
-    replace_vars();
-
-    if(strcmp(cmd_args[0], "exit") != 0) {
+    
+    if(i > 0 && strcmp(cmd_args[0], "exit") != 0) {
         // if not exit unset error and execute command, if there is an error in execution it will be set
         is_err = false;
     }
+
+    // copies cmd_args to curr_command
+    create_cmd_from_args(curr_command);
+
+    // replace variables by values
+    if(i > 0) replace_vars();
 
     return 0;
 }
@@ -662,7 +707,7 @@ int exec_cmd(void) {
     }
 
     // since it's not a built-in command it will be saved in the history
-    if(!is_from_history && !is_built_in && !(strcmp(last_command, cmd_buf) == 0)) {
+    if(!is_from_history && !is_built_in && !(strcmp(last_command, curr_command) == 0)) {
         addToHistory();
     }
 
@@ -670,7 +715,9 @@ int exec_cmd(void) {
     if(!is_built_in) {
         // fork and execute in child process
         run_cmd();
-        strcpy(last_command, cmd_buf);
+
+        // copies cmd_args to last_command
+        strcpy(last_command, curr_command);
     }
 
     if(redirect_in || redirect_out || redirect_err) {
@@ -680,23 +727,32 @@ int exec_cmd(void) {
     return 0;
 }
 
+
 int run_batch_mode(char *file_name) {
-    FILE *batch_file = fopen(file_name, "r");
+    batch_file = fopen(file_name, "r");
+
+    // if batch file doesn't exist exit with -1
+    // no need of freeing any memory
     if(batch_file == NULL) {
         exit(-1);
     }
 
-    char *line = NULL;
+    line = NULL;
     size_t line_buf_sz = 0;
     ssize_t line_length = 0;
 
     while((line_length = getline(&line, &line_buf_sz, batch_file)) != -1) {
         if(line_length <= 1 || line[0] == '#') continue;
+
+        if(line[strlen(line) - 1] == EOF) {
+            free_memory();
+            exit(is_err ? -1 : 0);
+        }
+
         if(line[strlen(line) - 1] == '\n') line[strlen(line) - 1] = '\0';
 
         // parse the input command buffer to tokenize and store in the array
-        char* cmd_buf_cpy = strdup(line);
-        parse_cmd(cmd_buf_cpy);
+        parse_cmd(line);
 
         if(cmd_args[0] == NULL) continue;
 
@@ -704,38 +760,42 @@ int run_batch_mode(char *file_name) {
         exec_cmd();
     }
 
-    fclose(batch_file);
-    free(line);
-
     return 0;
 }
 
 int main(int argc, char* argv[]) {
 
     // we need to set PATH to /bin initially
-    // putenv("PATH=/bin");
+    putenv("PATH=/bin");
 
     // if the program was invoked with 2 arguments then it is batch mode
     // with the 2nd argument being the batch file name
     if(argc == 2) {
         // Batch Mode
-        return run_batch_mode(argv[1]);
+        run_batch_mode(argv[1]);
+
+        free_memory();
+        return is_err ? -1 : 0;
     } else if(argc > 2) {
         // if more than 2 arguments were passed then it's an error
         exit(-1);
     }
 
+    char cmd_buf[MAXLINE];
+
     // the read_cmd function prints 'wsh> ' and takes input from the user
     while(read_cmd(cmd_buf, sizeof(cmd_buf)) >= 0) {
-        if(cmd_buf[strlen(cmd_buf) - 1] == EOF) exit(0);
+        if(strlen(cmd_buf) <= 1 || cmd_buf[0] == '#') continue;
 
-        if(cmd_buf[strlen(cmd_buf) - 1] == '\n') {
-            cmd_buf[strlen(cmd_buf) - 1] = '\0';
+        if(cmd_buf[strlen(cmd_buf) - 1] == EOF) {
+            free_memory();
+            exit(is_err ? -1 : 0);
         }
 
+        if(cmd_buf[strlen(cmd_buf) - 1] == '\n') cmd_buf[strlen(cmd_buf) - 1] = '\0';
+
         // parse the input command buffer to tokenize and store in the array
-        char* cmd_buf_cpy = strdup(cmd_buf);
-        parse_cmd(cmd_buf_cpy);
+        parse_cmd(cmd_buf);
 
         if(cmd_args[0] == NULL) continue;
 

@@ -14,6 +14,8 @@ typedef struct LocalNode {
     struct LocalNode *next;
 } LocalNode;
 
+void create_cmd_from_args(char[]);
+
 void free_memory(void);
 int count_cmd_args(void);
 
