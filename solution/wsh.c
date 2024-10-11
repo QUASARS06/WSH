@@ -34,10 +34,9 @@ bool redirect_in = false;
 bool redirect_out = false;
 bool redirect_err = false;
 
-int orig_stdin;
-int orig_stdout;
-int orig_stderr;
 int orig_stdn;
+int orig_stdin;
+int orig_stderr;
 
 char *redirect_filename = NULL;
 int redirect_fd = -1;
@@ -51,15 +50,8 @@ char path_global[4096];
 char *line = NULL;
 FILE *batch_file = NULL;
 
-void create_cmd_from_args(char dest[]) {
-    strcpy(dest, cmd_args[0]);
-    int i = 1;
-    while(cmd_args[i] != NULL) {
-        strcat(dest, " ");
-        strcat(dest, cmd_args[i]);
-        i++;
-    }
-}
+// history_cmd
+char history_cmd[MAXLINE];
 
 
 void free_memory(void) {
@@ -68,6 +60,7 @@ void free_memory(void) {
     while(histPtr != NULL) {
         HistNode *h = histPtr;
         histPtr = histPtr->next;
+
         free(h);
     }
 
@@ -101,6 +94,7 @@ int count_cmd_args(void) {
     return cmd_args_count;
 }
 
+
 char * getVarValue(char *var_name) {
     if(getenv(var_name) != NULL) {
         return getenv(var_name);
@@ -112,13 +106,18 @@ char * getVarValue(char *var_name) {
     return "";
 }
 
+
 /**
  * If there are any variables in the args list then we replace it by their corresponding value
  */
 int replace_vars(void) {
 
     for(int i = 0 ; cmd_args[i] != NULL ; i++) {
+        // case when token starts with a $ so a general variable case
+        // eg: cd $files backup
         if(cmd_args[i][0] == '$') {
+            // if a token starts with '$' but also has a '=' in it then it means $a=b
+            // which is an invalid case
             if(strstr(cmd_args[i], "=") != NULL) {
                 is_err = true;
                 return -1;
@@ -126,7 +125,10 @@ int replace_vars(void) {
             char *var_name = cmd_args[i] + 1;
             strcpy(cmd_args[i], getVarValue(var_name));
         }
-        else if(strstr(cmd_args[i], "$") != NULL) {
+        // handles case when $ is somewhere in the token
+        // so a variable assignment case like a=$b
+        // assumption works since it's guaranteed that variables will be single tokens
+        else if(strstr(cmd_args[i], "=$") != NULL) {
             char *var_name = strchr(cmd_args[i], '$') + 1;
             char *var_val = getVarValue(var_name);
 
@@ -153,98 +155,6 @@ int replace_vars(void) {
 }
 
 
-int set_redirection(void) {    
-    if(redirect_out) {
-        int output_fd = open(redirect_filename, O_WRONLY | O_CREAT | (redirect_append ? O_APPEND : O_TRUNC), 0644);
-        if(output_fd < 0) return -1;
-
-        if(redirect_err) dup2(output_fd, STDERR_FILENO);
-        dup2(output_fd, redirect_fd);
-
-        close(output_fd);
-    }
-
-    if(redirect_in) {
-        int input_fd = open(redirect_filename, O_RDONLY);
-        if(input_fd < 0) return -1;
-
-        dup2(input_fd, redirect_fd);
-        
-        close(input_fd);
-    }
-
-    return 0;
-
-}
-
-void unset_redirection(void) {
-    dup2(orig_stdin, STDIN_FILENO);
-    dup2(orig_stdout, STDOUT_FILENO);
-    dup2(orig_stderr, STDERR_FILENO);
-    dup2(orig_stdn, redirect_fd);
-    close(orig_stdin);
-    close(orig_stdout);
-    close(orig_stderr);
-    close(orig_stdn);
-}
-
-void check_redirection(char *token) {
-
-    // strstr will check if redirection symbols are present in our token
-    if(strstr(token, "&>>") != NULL) {
-        redirect_out = true;
-        redirect_err = true;
-        redirect_append = true;
-
-        redirect_fd = 1;
-        redirect_filename = strtok(token, "&>>");
-    } 
-    else if(strstr(token, "&>") != NULL) {
-        redirect_out = true;
-        redirect_err = true;
-
-        redirect_fd = 1;
-        redirect_filename = strtok(token, "&>");
-    }  
-    else if(strstr(token, ">>") != NULL) {
-        redirect_out = true;
-        redirect_append = true;
-        
-        if(isdigit(token[0])) {
-            redirect_fd = atoi(strtok(token, ">>"));
-            redirect_filename = strtok(NULL, "");
-        } else {
-            redirect_fd = 1;
-            redirect_filename = strtok(token, ">>");
-        }
-    }
-    else if(strstr(token, ">") != NULL) {
-        redirect_out = true;
-
-        if(isdigit(token[0])) {
-            redirect_fd = atoi(strtok(token, ">"));
-            redirect_filename = strtok(NULL, "");
-        } else {
-            redirect_fd = 1;
-            redirect_filename = strtok(token, ">");
-        }
-    }
-    else if(strstr(token, "<") != NULL) {
-        redirect_in = true;
-
-        if(isdigit(token[0])) {
-            redirect_fd = atoi(strtok(token, "<"));
-            redirect_filename = strtok(NULL, "");
-        } else {
-            redirect_fd = 0;
-            redirect_filename = strtok(token, "<");
-        }
-    }
-    orig_stdn = dup(redirect_fd);
-
-}
-
-
 /**
  * Prints the history pointed by HEAD
  * The history LL ends with a NULL so it's prints till NULL is encoutered
@@ -260,6 +170,7 @@ void printHistory(void) {
     }
 }
 
+
 /**
  * Checks for a given index value in the History LL
  */
@@ -273,23 +184,16 @@ char * searchHistory(int target_idx) {
     return ptr->cmd;
 }
 
+
 /**
  * Adds a NON built-in and NON history executed command into the History
  * If overflow then truncate old commands in the history
  */
 void addToHistory(void) {
-
     HistNode *NN = (HistNode*) malloc(sizeof(HistNode));
     NN->prev = NULL;
     NN->next = NULL;
     strcpy(NN->cmd, curr_command);
-    // strcpy(NN->cmd, cmd_args[0]);
-    // int i=1;
-    // while(cmd_args[i] != NULL) {
-    //     strcat(NN->cmd, " ");
-    //     strcat(NN->cmd, cmd_args[i]);
-    //     i++;
-    // }
 
     if(histHead == NULL && histTail == NULL) {
         histHead = NN;
@@ -313,6 +217,7 @@ void addToHistory(void) {
     }
 
 }
+
 
 /**
  * Update the history capacity to new_hist_capacity
@@ -354,6 +259,7 @@ void updateHistoryCapacity(int new_hist_capacity) {
     history_capacity = new_hist_capacity;
 }
 
+
 /**
  * Executes the history command
  * 1) history - prints the history
@@ -370,20 +276,39 @@ int history(bool *is_from_history) {
 
     // if history set # command is executed - update history size
     else if(strcmp(cmd_args[1], "set") == 0) {
+        if(!isdigit(cmd_args[2][0])) {
+            is_err = true;
+            return -1;
+        }
+        
         int new_hist_capactiy = atoi(cmd_args[2]);
-        if(new_hist_capactiy > 0) {
+        if(new_hist_capactiy >= 0) {
             updateHistoryCapacity(new_hist_capactiy);
+        } else {
+            is_err = true;
+            return -1;
         }
     }
 
     else {
         // check cmd_args[1] is a valid integer
         *is_from_history = true;
+
+        if(!isdigit(cmd_args[1][0])) {
+            is_err = true;
+            return -1;
+        }
+
         int hist_idx = atoi(cmd_args[1]);
         if(hist_idx > 0 && hist_idx <= curr_history_size) {
             char *hist_cmd = searchHistory(hist_idx);
-            parse_cmd(hist_cmd);
+            
+            strcpy(history_cmd, hist_cmd);
+            parse_cmd(history_cmd);
+            
+            set_redirection();
             run_cmd();
+            unset_redirection();
         }
     }
 
@@ -391,26 +316,31 @@ int history(bool *is_from_history) {
 }
 
 
+int exclude_hidden_files(const struct dirent *entry) {
+    return (entry->d_name[0] != '.');
+}
+
 /**
  * Custom Implementation of ls -1 command
  */
 int ls(void) {
     char pwd[PATH_MAX];
+    if(count_cmd_args() != 0) {
+        is_err = true;
+        return -1;
+    }
+
     if(getcwd(pwd, sizeof(pwd)) == NULL) {
         return -1;
     }
     
     struct dirent **allFileNames; 
-    int n = scandir(pwd, &allFileNames, NULL, alphasort);
+    int n = scandir(pwd, &allFileNames, exclude_hidden_files, alphasort);
 
-    if(n < 0) {
-        perror("ls error");
-    } else {  
+    if(n > 0) {
         int i = 0;  
         while(i < n) {
-            if(allFileNames[i]->d_name[0] != '.') {
-                printf("%s\n", allFileNames[i]->d_name);
-            }
+            printf("%s\n", allFileNames[i]->d_name);
             free(allFileNames[i]);
             i++;
         }
@@ -450,7 +380,11 @@ int export(void) {
         return -1;
     }
 
-    // TODO: export VAR should produce error
+    // if 2nd token in command doesn't contain an '=' then it's an error
+    if(strstr(cmd_args[1], "=") == NULL) {
+        is_err = true;
+        return -1;
+    }
     
     strcpy(path_global, cmd_args[1]);
     putenv(path_global);
@@ -462,6 +396,12 @@ int export(void) {
  * Prints the local variables LL pointed by localHead
  */
 int vars(void) {
+
+    if(count_cmd_args() != 0) {
+        is_err = true;
+        return -1;
+    }
+
     if(localHead == NULL) return 0;
     LocalNode *ptr = localHead;
     
@@ -491,6 +431,13 @@ char * searchLocal(char* varname) {
 int local(void) {
     if(count_cmd_args() != 1) return -1;
 
+    // local command can't start with a variable
+    // local commands varname can't be empty
+    if(cmd_args[1][0] == '$' || cmd_args[1][0] == '=') {
+        is_err = true;
+        return -1;
+    }
+
     char *token;
     char *varname = NULL;
     char *varvalue = "\0";
@@ -510,12 +457,19 @@ int local(void) {
 
     LocalNode *ptr = localHead;
 
-    while(ptr != NULL && ptr->next != NULL) {
-        if(strcmp(ptr->varname, varname) == 0) break;
+    while(ptr != NULL && ptr->next != NULL && strcmp(ptr->varname, varname) != 0) {
         ptr = ptr->next;
     }
 
-    if(ptr == NULL || ptr->next == NULL) {
+    /**
+     * After above loop there are 3 cases:
+     * 1. ptr = NULL, only possible when head was NULL which means vars is empty - Create NEW Node
+     * 2. ptr->next = NULL, which means pointer is at end of the LL
+     *      2a. Either last element matches what we are trying to insert which means an UPDATE
+     *      2b. Last element DOESN'T match what we are trying to insert - Create NEW Node end of List
+     * 3. ptr is somewhere in middle which means match was found - UPDATE
+     * */ 
+    if(ptr == NULL || (ptr->next == NULL && strcmp(ptr->varname, varname) != 0)) {
         LocalNode *LN = (LocalNode*) malloc(sizeof(LocalNode));
         
         LN->varname = malloc((strlen(varname)+1) * sizeof(char));
@@ -547,7 +501,6 @@ int run_cmd(void) {
     // NON-built command exists
     // Hence if a '/' exists in the user input command just execute it
 
-    // if(access(cmd_args[0], X_OK) == 0) {
     if(strchr(cmd_args[0], '/') != NULL) {
         strcpy(cmd_path, cmd_args[0]);
     } else {
@@ -574,6 +527,7 @@ int run_cmd(void) {
     pid_t pid = fork();
     
     if(pid < 0) {
+        // fork itself failed
         is_err = true;
         return -1;
     }
@@ -582,12 +536,15 @@ int run_cmd(void) {
         execv(cmd_path, cmd_args);
         
         // if execv returned it means some error
+        // this error will be handled in the parent exit_status handler
         exit(-1);
     } else {
         int status_ptr;
         waitpid(pid, &status_ptr, 0);
-    
+
+        // wifexited returns true if the child process exited normally
         if(WIFEXITED(status_ptr)) {
+            // get exit status of the child process
             int exit_status = WEXITSTATUS(status_ptr);
             if(exit_status != 0) {
                 is_err = true;
@@ -602,10 +559,12 @@ int run_cmd(void) {
     return 0;
 }
 
+
 /**
  * Reads input from stdin and then stores it in the cmd_buf passed
  */
 int read_cmd(char *cmd, size_t cmd_sz) {
+    // fflush is used to immediately print the wsh> to stdout even if buffer isn't full
     printf("wsh> ");
     fflush(stdout);
 
@@ -615,12 +574,7 @@ int read_cmd(char *cmd, size_t cmd_sz) {
     return 0;
 }
 
-
-/**
- * Parses the cmd_buf string and breaks it into tokens separated by " "
- * The tokens are then saved in the cmg_args_list array
- */
-int parse_cmd(char *cmd_buf_to_parse) {
+void clear_redirection_vars(void) {
 
     // redirection
     redirect_filename = NULL;
@@ -632,9 +586,199 @@ int parse_cmd(char *cmd_buf_to_parse) {
     redirect_out = false;
     redirect_err = false;
 
-    orig_stdin = dup(STDIN_FILENO);
-    orig_stdout = dup(STDOUT_FILENO);
-    orig_stderr = dup(STDERR_FILENO);
+    orig_stdin = -1;
+    orig_stderr = -1;
+    orig_stdn = -1;
+    
+}
+
+
+int set_redirection(void) {
+
+    if(redirect_out) {
+        int is_fd_valid = fcntl(redirect_fd, F_GETFD);
+
+        int output_fd = open(redirect_filename, O_WRONLY | O_CREAT | (redirect_append ? O_APPEND : O_TRUNC), 0644);
+        if(output_fd < 0) {
+            is_err = true;
+            return -1;
+        }
+
+        if(is_fd_valid == -1) {
+            // this fd points to nothing
+            orig_stdn = -1;
+            if(redirect_fd != output_fd) {
+                if(dup2(output_fd, redirect_fd) < 0) {
+                    is_err = true;
+                    return -1;
+                }
+            }
+        } else {
+            // guaranteed to exists since is_fd_valid is not -1
+            orig_stdn = dup(redirect_fd);
+
+            if(redirect_err) {
+                orig_stderr = dup(STDERR_FILENO);
+                if(dup2(output_fd, STDERR_FILENO) < 0 || orig_stderr < 0) {
+                    is_err = true;
+                    return -1;
+                }
+            }
+            
+            if(dup2(output_fd, redirect_fd) < 0) {
+                is_err = true;
+                return -1;
+            }
+        }
+
+        close(output_fd);
+    }
+
+    if(redirect_in) {
+        int input_fd = open(redirect_filename, O_RDONLY);
+        if(input_fd < 0) {
+            is_err = true;
+            return -1;
+        }
+
+        orig_stdn = dup(redirect_fd);
+        if(dup2(input_fd, redirect_fd) < 0 || orig_stdn < 0) {
+            is_err = true;
+            return -1;
+        }
+        close(input_fd);
+    }
+    
+    return 0;
+
+}
+
+
+int unset_redirection(void) {
+
+    if(!(redirect_in || redirect_out || redirect_err)) {
+        return -1;
+    }
+
+    if(orig_stdn != -1) {
+        if(dup2(orig_stdn, redirect_fd) < 0) {
+            is_err = true;
+            return -1;
+        }
+        close(orig_stdn);
+    } else {
+        close(redirect_fd);
+    }
+
+    if(orig_stderr != -1) {
+        if(dup2(orig_stderr, STDERR_FILENO) < 0) {
+            is_err = true;
+            return -1;
+        }
+        close(orig_stderr);
+    }
+
+    if(orig_stdin != -1) {
+        if(dup2(orig_stdin, STDIN_FILENO) < 0) {
+            is_err = true;
+            return -1;
+        }
+        close(orig_stdin);
+    }
+
+    clear_redirection_vars();
+
+    return 0;
+}
+
+
+int check_redirection(char *token) {
+
+    // strstr will check if redirection symbols are present in our token
+    if(strstr(token, "&>>") != NULL) {
+        if(token[0] != '&') {
+            is_err = true;
+            return -1;
+        }
+        redirect_out = true;
+        redirect_err = true;
+        redirect_append = true;
+
+        redirect_fd = STDOUT_FILENO;
+        redirect_filename = strtok(token, "&>>");
+    } 
+    else if(strstr(token, "&>") != NULL) {
+        if(token[0] != '&') {
+            is_err = true;
+            return -1;
+        }
+        redirect_out = true;
+        redirect_err = true;
+
+        redirect_fd = STDOUT_FILENO;
+        redirect_filename = strtok(token, "&>");
+    }  
+    else if(strstr(token, ">>") != NULL) {
+        redirect_out = true;
+        redirect_append = true;
+        
+        if(isdigit(token[0])) {
+            redirect_fd = atoi(strtok(token, ">>"));
+            redirect_filename = strtok(NULL, ">>");
+        } else {
+            if(token[0] != '>') {
+                is_err = true;
+                return -1;
+            }
+            redirect_fd = STDOUT_FILENO;
+            redirect_filename = strtok(token, ">>");
+        }
+    }
+    else if(strstr(token, ">") != NULL) {
+        redirect_out = true;
+
+        if(isdigit(token[0])) {
+            redirect_fd = atoi(strtok(token, ">"));
+            redirect_filename = strtok(NULL, ">");
+        } else {
+            if(token[0] != '>') {
+                is_err = true;
+                return -1;
+            }
+            redirect_fd = STDOUT_FILENO;
+            redirect_filename = strtok(token, ">");
+        }
+    }
+    else if(strstr(token, "<") != NULL) {
+        redirect_in = true;
+
+        if(isdigit(token[0])) {
+            redirect_fd = atoi(strtok(token, "<"));
+            redirect_filename = strtok(NULL, "<");
+        } else {
+            if(token[0] != '<') {
+                is_err = true;
+                return -1;
+            }
+            redirect_fd = STDIN_FILENO;
+            redirect_filename = strtok(token, "<");
+        }
+    }
+
+    return 0;
+
+}
+
+
+/**
+ * Parses the cmd_buf string and breaks it into tokens separated by " "
+ * The tokens are then saved in the cmg_args_list array
+ */
+int parse_cmd(char *cmd_buf_to_parse) {
+    // copies cmd_args to curr_command
+    strcpy(curr_command, cmd_buf_to_parse);
+
+    clear_redirection_vars();
 
     char *token;
 
@@ -642,11 +786,17 @@ int parse_cmd(char *cmd_buf_to_parse) {
     token = strtok(cmd_buf_to_parse, " ");
 
     int i = 0;
+    int redirection_parse_error = 0;
     while(token != NULL) {
         // if we encounter a '#' at the start of any token we stop processing the rest of the input sequence
         if(strlen(token) >= 1 && token[0] == '#') break;
 
-        check_redirection(token);
+        redirection_parse_error = check_redirection(token);
+        if(redirection_parse_error == -1) {
+            clear_redirection_vars();
+            break;
+        }
+
         if(redirect_in || redirect_out || redirect_err) break;
         
         cmd_args[i] = token;
@@ -657,32 +807,37 @@ int parse_cmd(char *cmd_buf_to_parse) {
     
     if(i > 0 && strcmp(cmd_args[0], "exit") != 0) {
         // if not exit unset error and execute command, if there is an error in execution it will be set
+        // exit is not considered as part of a successful command when sending last command RC
+        // So if exit is passed then don't change the is_err let it be what last command set it to be
+    
         is_err = false;
     }
 
-    // copies cmd_args to curr_command
-    create_cmd_from_args(curr_command);
-
     // replace variables by values
-    if(i > 0) replace_vars();
+    if(i > 0) {
+        if(replace_vars() == -1) return -1;
+    }
 
     return 0;
 }
 
 
 int exec_cmd(void) {
-
-    if(redirect_in || redirect_out || redirect_err) {
-        set_redirection();
-    }
+    
+    set_redirection();
 
     bool is_from_history = false;   // stores whether a NON built-in command is requested via history or not
     bool is_built_in = true;
     
     if(strcmp(cmd_args[0], "exit") == 0) {      // if the command passed is exit then exit(-1) gracefully
-        free_memory();
-        if(cmd_args[1] != NULL) is_err = true;
-        exit(is_err ? -1 : 0);
+        if(cmd_args[1] != NULL && strlen(cmd_args[1]) > 0) {
+            is_err = true;
+            return -1;
+        }
+        else {
+            free_memory();
+            exit(is_err ? -1 : 0);
+        }
     }
     else if(strcmp(cmd_args[0], "cd") == 0) {    // Built-In change directory
         cd();
@@ -720,9 +875,7 @@ int exec_cmd(void) {
         strcpy(last_command, curr_command);
     }
 
-    if(redirect_in || redirect_out || redirect_err) {
-        unset_redirection();
-    }
+    unset_redirection();
 
     return 0;
 }

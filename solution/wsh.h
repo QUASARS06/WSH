@@ -14,17 +14,16 @@ typedef struct LocalNode {
     struct LocalNode *next;
 } LocalNode;
 
-void create_cmd_from_args(char[]);
-
 void free_memory(void);
 int count_cmd_args(void);
 
 char * getVarValue(char *);
 int replace_vars(void);
 
+void clear_redirection_vars(void);
 int set_redirection(void);
-void unset_redirection(void);
-void check_redirection(char *);
+int unset_redirection(void);
+int check_redirection(char *);
 
 void printHistory(void);
 char * searchHistory(int);
@@ -32,6 +31,7 @@ void addToHistory(void);
 void updateHistoryCapacity(int);
 int history(bool *);
 
+int exclude_hidden_files(const struct dirent *);
 int ls(void);
 int cd(void);
 int export(void);

@@ -17,3 +17,6 @@ $(TARGET)-dbg: $(SRC)
 
 clean:
 	rm -rf $(TARGET) $(TARGET)-dbg *.out *.dSYM
+
+submit:
+	cd .. && cp -rf * $(SUBMITPATH)
